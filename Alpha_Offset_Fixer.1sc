@@ -1,0 +1,292 @@
+//------------------------------------------------
+//--- 010 Editor v11.0.1 Script File
+//
+//      File: Alpha_Offset_Fixer.1sc
+//   Authors: alphaZomega
+//   Version: 0.2
+//   Purpose: Fix offsets within the range of your selection
+//  Category: 
+//   History: October 4 2021
+//------------------------------------------------
+
+
+//Options:
+UBYTE Change_Odd_Offsets        = TRUE;    //If set to true, the script will change detected offsets that are both even and odd.
+UBYTE Search_By_UInt64          = TRUE;    //If set to true, the script will scan the file in 8-byte uint64 increments (rather than 4 byte uint32)
+UBYTE ScriptedMode              = FALSE;   //If set to true, the offset fixer will run as a pre-scripted thing via the directions you put in "RunScripts()"
+UINT Special_Skip_Bytes         = 0;       //Set this to give the fixer a special stride to skip between each scanned int or int64
+
+
+//Create automated scripts here:
+void RunScripts() {
+    runOffsetFixerAt(0, FileSize(), GetSelStart(), 16777217, 0, FileSize());  //example, runs offset fixer across whole filesize, inserting at your cursor
+    
+    //amount ==  16777217 means to paste from the clipboard in scripted mode
+    //amount == -16777217 means to run the fixer in default/input mode
+}
+
+//FUNCTIONS:
+LittleEndian();
+
+void runOffsetFixerAt(int64 relBookmkPos, int64 endBookmkPos, int64 insertBookmkPos, int32 amount, int64 selStart, int64 selEnd) 
+{
+    if (GetSelSize() || ScriptedMode) {
+        
+        int32 insertPoint = insertBookmkPos;  
+        if (false && selStart < relBookmkPos) {
+            relBookmkPos = selStart;  
+            endBookmkPos = FileSize();
+            ubyte isTypeTwo;
+        }  
+        int32 start = insertBookmkPos - relBookmkPos;
+        int32 end = endBookmkPos - relBookmkPos;  
+        if (start < 0) 
+            start = 0;
+        Printf("Relative Offset: %i\n", relBookmkPos);
+        Printf("Insertion Point: %i\n", insertPoint);
+        Printf("Selection Start: %i\n", selStart);
+        Printf("Selection End: %i\n", selEnd);
+        Printf("End: %i\n", endBookmkPos);
+        Printf("Start (adjusted): %i\n", start);
+        
+        //get the size of the clipboard bytes:
+        SetCursorPos(FileSize());
+        SetSelection(FileSize(), 0);
+        PasteFromClipboard();
+        addedSize = GetSelSize();
+        DeleteBytes(FileSize()-addedSize, addedSize);
+        SetCursorPos(insertPoint);
+        SetSelection(selStart, selEnd - selStart);
+        
+        //prompt for input:
+        string addedSizeStr; 
+        SPrintf(addedSizeStr, "%i", addedSize);
+        if (amount == -16777217) //rare number
+            addedSizeStr = InputString("Fix Offsets", 
+            "How many bytes do you want to increase/decrease by?\nInput a space to use the clipboard, or \"!\" to force", addedSizeStr);
+        else if (amount != 16777217)
+            SPrintf(addedSizeStr, "%i", amount);
+        
+        if (addedSizeStr == "") {
+            return;
+        } else if (addedSizeStr == " " || amount == 16777217) { 
+            Printf("\n  Performing automatic adjustment...\n\n");
+            SetSelection(insertPoint, 0);
+            SetCursorPos(insertPoint);
+            PasteFromClipboard();
+        } else if (addedSizeStr == "-") {
+            addedSize = -addedSize;
+        } else if (addedSizeStr[0] == 0x21) { // "!"
+            start = 0;
+            end = FileSize();
+            addedSizeStr = StrDel(addedSizeStr, 0, 1);
+            if (Atoi(addedSizeStr) > 0)
+                addedSize = Atoi(addedSizeStr);
+            Printf("\n  Forcing adjustment...\n\n");
+        } else {
+            addedSize = Atoi(addedSizeStr);
+        }
+        
+        FSeek(selStart);
+        Printf("Searching from %i to %i for values greater than %i and less than %i...\n", FTell(), selEnd, start, end+1);
+        
+        while(FTell() < selEnd && FTell() <= FileSize()-sZ) {
+            if (Search_By_UInt64)
+                temp = ReadInt64(FTell());
+            else temp = ReadInt(FTell());
+            //Printf("%i\n", temp);
+            if (temp > 0 && (Change_Odd_Offsets || temp % 2 == 0)  && temp >= start && temp <= end+1) { 
+                Printf("Changing offset at %u from %u to %u\n", FTell(), temp, temp+addedSize);
+                if (Search_By_UInt64)
+                    WriteUInt64(FTell(), temp + addedSize);
+                else WriteUInt(FTell(), temp + addedSize);
+                FSkip(Special_Skip_Bytes);
+            }
+            FSkip(sZ);
+        }
+        WriteUInt(insertPoint, ReadUInt(insertPoint)); //Resets view
+        Printf("\nAdjusted selection for a change of +%i bytes.\n", addedSize);
+    }
+}
+
+void runDefaultMode() 
+{    
+    updateBookmarks();
+    if ((relBookmkPos == -1 || endBookmkPos == -1 || insertBookmkPos == -1)) { //startBookmkPos == -1 || 
+        
+        if (relBookmkPos == -1 || GetSelSize() == 1) {
+            AddRelBookmark();
+        } 
+        else if (endBookmkPos == -1) {
+            AddEndBookmark();
+        }
+        else if (insertBookmkPos == -1) {
+            InsertBookmarkMethod();
+        }
+        else if (relBookmkPos != -1 && insertBookmkPos != -1 && endBookmkPos != -1) { //clear bookmarks
+            ClearAllBookmarks();
+        }
+        return;
+    }
+    else if (!GetSelSize()) {
+        if (GetCursorPos() < relBookmkPos ) {
+            AddRelBookmark();
+            return;
+        }
+        else if (GetCursorPos() > endBookmkPos && !GetSelSize()) {
+            AddEndBookmark();
+            return;
+        }
+        else if (GetCursorPos() != insertBookmkPos) {
+            InsertBookmarkMethod();
+            return;
+        } 
+        else if (GetCursorPos() == insertBookmkPos) {
+            ClearAllBookmarks();
+            return;
+        }
+    }
+    runOffsetFixerAt(relBookmkPos, endBookmkPos, insertBookmkPos, -16777217, GetSelStart(), GetSelStart() + GetSelSize());
+}
+
+void updateBookmarks() {
+    relBookmkPos = -1; insertBookmkPos = -1; endBookmkPos = -1;
+    for (i=0; i<GetNumBookmarks(); i++) {
+        if (GetBookmarkName(i) == "OffsetFixer_RelStart") {
+            relBookmkPos = GetBookmarkPos(i);
+        } 
+        else if (GetBookmarkName(i) == "OffsetFixer_InsertPt") {
+            if (GetBookmarkPos(i) != 0)
+                insertBookmkPos = GetBookmarkPos(i)+1;
+            else 
+                insertBookmkPos = GetBookmarkPos(i);
+            insertBookmkIdx = i;
+        }
+        else if (GetBookmarkName(i) == "OffsetFixer_End") {
+            endBookmkPos = GetBookmarkPos(i);
+        }
+    }
+}
+
+void AddRelBookmark() {
+    if (endBookmkPos != -1 && GetCursorPos() > endBookmkPos){
+        AddEndBookmark();
+        return;
+    } else if (insertBookmkPos != -1 && GetCursorPos() > insertBookmkPos){
+        InsertBookmarkMethod();
+        return;
+    } else {
+        clearBookmark("OffsetFixer_RelStart", false);
+        AddBookmark(GetSelStart(), "OffsetFixer_RelStart", "ubyte", -1, cNone, cYellow, 0);
+        Printf("\nSet relative start address to %i\n", GetSelStart());
+    }
+}
+
+void AddEndBookmark() {
+    if (GetCursorPos() < relBookmkPos){
+        AddRelBookmark();
+        return;
+    } else if (insertBookmkPos != -1 && GetCursorPos() < insertBookmkPos){
+        InsertBookmarkMethod();
+        return;
+    } else {
+        clearBookmark("OffsetFixer_End", false);
+        if (GetCursorPos() == relBookmkPos && (!GetSelSize() || GetSelStart()+GetSelSize() == FileSize())) 
+            AddBookmark(FileSize()-1, "OffsetFixer_End", "ubyte", -1, cNone, cBlue, 0);
+        else AddBookmark(GetSelStart()+GetSelSize(), "OffsetFixer_End", "ubyte", -1, cNone, cBlue, 0);
+    }
+    Printf("\nSet ending boundary to %i\n", GetSelStart()+GetSelSize());
+}
+
+void AddInsertBookmark() {
+    clearBookmark("OffsetFixer_InsertPt", false);
+    if (GetCursorPos() == 0)
+        AddBookmark(GetCursorPos(), "OffsetFixer_InsertPt", "ubyte", -1, cNone, cRed, 0);
+    else AddBookmark(GetCursorPos()-1, "OffsetFixer_InsertPt", "ubyte", -1, cNone, cRed, 0);
+    Printf("\nSet insertion point to %i\n", GetCursorPos());
+}
+
+void InsertBookmarkMethod() {
+    if (!changeOtherBookmark ) {
+        if (endBookmkPos != -1 && GetCursorPos() >= endBookmkPos) {
+            if (insertBookmkPos != -1 && GetCursorPos() == endBookmkPos)
+                changeOtherBookmark = (MessageBox( idYes | idNo,"Reset Ending Boundary", "Click \"Yes\" to reset the ending boundary,\nor \"No\" to change the insertion point") == idYes );
+            
+            if (changeOtherBookmark || GetCursorPos() != endBookmkPos) {
+                clearBookmark("OffsetFixer_End", true);
+            } else {
+                AddInsertBookmark();
+            }
+        } else if (relBookmkPos != -1 && GetCursorPos() <= relBookmkPos) {
+            if (insertBookmkPos != -1 && GetCursorPos() == relBookmkPos)
+                changeOtherBookmark = (MessageBox( idYes | idNo,"Reset Relative Start", "Click \"Yes\" to reset the relative start,\nor \"No\" to change the insertion point") == idYes );
+            
+            if (changeOtherBookmark || GetCursorPos() != relBookmkPos) { 
+                clearBookmark("OffsetFixer_RelStart", true);
+            } else {
+                AddInsertBookmark();
+            }
+        } else AddInsertBookmark();
+    } else {
+        AddInsertBookmark();
+    }
+}
+
+void ClearAllBookmarks() {
+    clearBookmark("OffsetFixer_RelStart", false);
+    clearBookmark("OffsetFixer_End", false);
+    clearBookmark("OffsetFixer_InsertPt", false);
+    Printf("\nCleared all bookmarks.\n");
+}
+
+void clearBookmark(string bookmarkName, ubyte showMessage) {
+    local int i;
+    for (i=0; i<GetNumBookmarks(); i++) {
+        if (GetBookmarkName(i) == bookmarkName) {
+            RemoveBookmark(i);
+            i--;
+        }
+    }
+    {
+        switch (bookmarkName) {
+            case "OffsetFixer_RelStart": if (showMessage) Printf("\nCleared relative start\n"); break;
+            case "OffsetFixer_End": if (showMessage) Printf("\nCleared ending boundary\n"); break;
+            case "OffsetFixer_InsertPt": if (showMessage) Printf("\nCleared insertion point\n"); break;
+            default: break;
+        }
+    }
+}
+
+//GLOBAL VARIABLES:
+int32 addedSize = 0;
+int32 sZ = 4 * Search_By_UInt64 + 4;
+int32 insertBookmkIdx;
+int64 i, j, k, num, temp;
+string s;
+int64 relBookmkPos = -1;
+int64 insertBookmkPos = -1;
+int64 endBookmkPos = -1;
+int64 alignedOffs = (GetCursorPos() + 7) & -8;
+ubyte changeOtherBookmark;
+
+//BEGIN:
+if (ScriptedMode) { 
+    RunScripts();
+} else {
+    runDefaultMode();
+    updateBookmarks();
+    if (relBookmkPos != -1 && insertBookmkPos != -1 && endBookmkPos != -1) {
+        Printf("\nRelative Start:     %u\nEnding Boundary:    %u\nInsertion Point:    %u\n", relBookmkPos, endBookmkPos, insertBookmkPos);
+        Printf("\nSelect some bytes in the hex and run the script to fix offsets\nwithin those bytes, or run the script again with no selection\n"); 
+        Printf("to change boundaries. Set the insertion point twice in the same\nspot with no selection to clear all bookmarks.\n");
+    } else if (insertBookmkPos != -1) {
+        if (relBookmkPos != -1)
+            Printf("\nRun the script again to set an ending boundary.\n");
+        else
+            Printf("\nRun the script again to set a relative starting point.\n");
+    } else if (endBookmkPos != -1) {
+        Printf("\nRun the script again to set an insertion point.\n");
+    } else if (relBookmkPos != -1) {
+        Printf("\nRun the script again to set an ending boundary.\n");
+    } 
+}
